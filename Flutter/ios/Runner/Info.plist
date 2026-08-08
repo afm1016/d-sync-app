@@ -76,5 +76,21 @@
     <string>ワークアウト中の移動経路を記録するために位置情報を利用します。</string>
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
     <string>バックグラウンドでのワークアウト記録に位置情報を利用します。</string>
+
+    <key>NSCameraUsageDescription</key>
+<string>ワークアウト中の写真撮影にカメラを使用します。</string>
+<key>NSPhotoLibraryUsageDescription</key>
+<string>プロフィールアイコンに設定する画像を選択するためにフォトライブラリを使用します。</string>
+
+<key>UIBackgroundModes</key>
+<array>
+    <string>location</string>
+    <string>fetch</string>
+</array>
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+<string>ワークアウト中のルートをバックグラウンドで記録するために使用します。</string>
+<key>NSLocationAlwaysUsageDescription</key>
+<string>ワークアウト中のルートをバックグラウンドで記録するために使用します。</string>
+
 </dict>
 </plist>
