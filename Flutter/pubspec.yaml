@@ -40,6 +40,15 @@ dependencies:
   latlong2: ^0.10.1
   mobile_scanner: ^7.4.0
   qr_flutter: ^4.1.0
+  firebase_core: ^4.13.0
+  cloud_firestore: ^6.8.0
+  firebase_auth: ^6.5.7
+  image_cropper: ^12.2.1
+  flutter_background_service: ^5.0.5
+
+  # 💡 ここにインデント（スペース2つ分）を合わせて追加します
+  image_picker: ^1.0.7
+  http: ^1.2.0
 
 dev_dependencies:
   flutter_test:
