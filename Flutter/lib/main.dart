@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:math';
 import 'dart:ui'; 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' hide Path;
 import 'package:geolocator/geolocator.dart';
@@ -18,6 +19,42 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:io';
+import 'package:charset_converter/charset_converter.dart';
+
+// ==================================================
+// 画面間の設定共有クラス（AI目標からマップ・筋トレへの連動用）
+// ==================================================
+enum WorkoutMode { running, muscle }
+
+class ChatMessage {
+  final String text;
+  final bool isUser;
+  final List<Map<String, dynamic>>? suggestions;
+
+  ChatMessage({
+    required this.text,
+    required this.isUser,
+    this.suggestions,
+  });
+}
+
+class WorkoutRouteConfig {
+  static double targetKm = 5.0;
+  static bool hasNewGoal = false;
+  static String goalContent = '';
+  static WorkoutMode activeMode = WorkoutMode.running;
+
+  // 筋トレモード用の動的メニューリスト
+  static List<Map<String, String>> muscleWorkouts = [
+    {'title': 'ベンチプレス', 'subtitle': '3セット × 10回 (目標: 60kg)'},
+    {'title': 'スクワット', 'subtitle': '3セット × 12回 (目標: 80kg)'},
+  ];
+  static bool hasNewMuscleGoal = false;
+
+  // 筋トレとランニングでチャット履歴を完全に分離
+  static List<ChatMessage> runningChatMessages = [];
+  static List<ChatMessage> muscleChatMessages = [];
+}
 
 // ==================================================
 // バックグラウンドサービスのバックグラウンド処理エントリ
@@ -36,6 +73,8 @@ void onStart(ServiceInstance service) {
 }
 
 Future<void> initializeBackgroundService() async {
+  if (kIsWeb) return;
+  
   final service = FlutterBackgroundService();
 
   await service.configure(
@@ -58,9 +97,28 @@ Future<void> initializeBackgroundService() async {
 }
 
 // ==================================================
+// トイレデータのモデル定義
+// ==================================================
+class ToiletLocation {
+  final String name;
+  final LatLng latLng;
+  final String hasWheelchair;
+  final String hasOstomy;
+  final String address;
+
+  ToiletLocation({
+    required this.name,
+    required this.latLng,
+    required this.hasWheelchair,
+    required this.hasOstomy,
+    required this.address,
+  });
+}
+
+// ==================================================
 // Cloudflare Workersに画像を送信してURLを取得する共通関数
 // ==================================================
-Future<String?> uploadImageToCloudflare(XFile imageFile) async {
+Future<String?> uploadImageToCloudflare(XFile imageFile) async { 
   try {
     const String workerUrl = 'https://workout-uploader.tokyo-odh-341.workers.dev'; 
     if (workerUrl.contains('〇〇')) {
@@ -85,25 +143,35 @@ Future<String?> uploadImageToCloudflare(XFile imageFile) async {
 }
 
 // ==================================================
-// 画像拡大表示用の共通関数
+// 画像拡大表示用の共通関数 (WebのCORSエラー配慮型)
 // ==================================================
-void showFullImageDialog(BuildContext context, String imageUrl) {
+void showFullImageDialog(BuildContext context, String imageUrl) { 
   if (imageUrl.isEmpty) return;
   showDialog(
     context: context,
     builder: (context) => Dialog(
       backgroundColor: Colors.black,
       insetPadding: EdgeInsets.zero,
-      child: Stack(
+      child: Stack( 
         alignment: Alignment.center,
         children: [
           InteractiveViewer(
             panEnabled: true,
             boundaryMargin: const EdgeInsets.all(20),
-            minScale: 0.5,
-            maxScale: 4.0,
+            minScale: 0.5, 
+            maxScale: 4.0, 
             child: Center(
-              child: Image.network(imageUrl),
+              child: Image.network(
+                imageUrl,
+                errorBuilder: (context, error, stackTrace) => Container(
+                  padding: const EdgeInsets.all(20),
+                  child: const Text(
+                    '画像を読み込めませんでした\n(CORS制限の可能性があります)',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white, fontSize: 14),
+                  ),
+                ),
+              ), 
             ),
           ),
           Positioned(
@@ -111,7 +179,7 @@ void showFullImageDialog(BuildContext context, String imageUrl) {
             right: 20,
             child: IconButton(
               icon: const Icon(Icons.close, color: Colors.white, size: 30),
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(context), 
             ),
           ),
         ],
@@ -121,7 +189,7 @@ void showFullImageDialog(BuildContext context, String imageUrl) {
 }
 
 // ==================================================
-// ログデータ共有用の簡易データストア (複数画像対応)
+// ログデータ共有用の簡易データストア
 // ==================================================
 class WorkoutLogItem {
   final String id;
@@ -157,7 +225,7 @@ class WorkoutLogStore {
 // カラーパレット定義
 // ==================================================
 class AppThemeColors {
-  static const Color primary = Color(0xFF2563EB); 
+  static const Color primary = Color(0xFFD9FF2E);// 蛍光イエロー 
   static const Color secondary = Color(0xFF10B981); 
   static const Color accent = Color(0xFFF59E0B); 
   static const Color background = Color(0xFFF8FAFC); 
@@ -168,11 +236,16 @@ class AppThemeColors {
   static const Color error = Color(0xFFEF4444); 
 }
 
+// アプリ起動時実行される関数
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  await initializeBackgroundService();
-  runApp(const MyApp());
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform); 
+  
+  if (!kIsWeb) {
+    await initializeBackgroundService(); 
+  }
+  
+  runApp(const MyApp()); 
 }
 
 class MyApp extends StatelessWidget {
@@ -231,8 +304,8 @@ class _LoginScreenState extends State<LoginScreen> {
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
-      if (mounted) _navigateToHome();
-    } catch (e) {
+      if (mounted) _navigateToHome(); 
+    } catch (e) { 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -271,7 +344,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ],
                   ),
-                  child: const Icon(Icons.directions_run_rounded, size: 48, color: Colors.white),
+                  child: const Icon(Icons.directions_run_rounded, size: 48, color: Colors.black),
                 ),
                 const SizedBox(height: 20),
                 const Text('Welcome Back', style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: AppThemeColors.text)),
@@ -289,12 +362,12 @@ class _LoginScreenState extends State<LoginScreen> {
                     onPressed: _isLoading ? null : _login,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppThemeColors.primary,
-                      foregroundColor: Colors.white,
+                      foregroundColor: Colors.black,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       elevation: 0,
                     ),
                     child: _isLoading 
-                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2))
                       : const Text('ログイン', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   ),
                 ),
@@ -364,7 +437,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       );
 
       final uid = userCredential.user!.uid;
-      final String generatedAppId = uid.substring(0, 8).toUpperCase();
+      final String generatedAppId = uid.substring(0, 8).toUpperCase(); 
 
       await FirebaseFirestore.instance.collection('users').doc(uid).set({
         'uid': uid,
@@ -378,10 +451,13 @@ class _RegisterScreenState extends State<RegisterScreen> {
         'gachaPoints': 60,
         'friends': [], 
         'createdAt': FieldValue.serverTimestamp(),
+        'level': 1,
+        'activeDays': 0,
+        'lastWorkoutDate': '',
       });
 
       if (mounted) _navigateToHome();
-    } catch (e) {
+    } catch (e) { 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('エラーが発生しました: $e'), backgroundColor: AppThemeColors.error),
@@ -421,12 +497,12 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     onPressed: _isLoading ? null : _register,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppThemeColors.primary,
-                      foregroundColor: Colors.white,
+                      foregroundColor: Colors.black,
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                       elevation: 0,
                     ),
                     child: _isLoading 
-                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2))
                       : const Text('登録を完了する', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   ),
                 ),
@@ -489,7 +565,7 @@ class MainNavigationScreen extends StatefulWidget {
 }
 
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
-  int _currentIndex = 0; 
+  int _currentIndex = 0;
 
   final List<Widget> _screens = const [
     TimelineScreen(),
@@ -501,7 +577,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _screens[_currentIndex],
+      body: _screens[_currentIndex], 
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
         onTap: (index) {
@@ -539,11 +615,11 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
 }
 
 // ==================================================
-// 共通コメントBottomSheet表示関数（非正規化対応・確実なプロフィール遷移版）
+// 共通コメントBottomSheet表示関数
 // ==================================================
 void showCommentsBottomSheet(BuildContext context, String postId, String postOwner) {
   final TextEditingController commentController = TextEditingController();
-  final parentContext = context; // 親コンテキスト保持
+  final parentContext = context; 
 
   showModalBottomSheet(
     context: context,
@@ -615,7 +691,6 @@ void showCommentsBottomSheet(BuildContext context, String postId, String postOwn
                         final String text = commentData['text'] ?? '';
                         final String? directPhotoUrl = commentData['photoUrl'];
 
-                        // 💡 コメントにphotoUrlがない古いデータの場合はストリームでユーザー情報を補完
                         return StreamBuilder<DocumentSnapshot?>(
                           stream: (directPhotoUrl == null || directPhotoUrl.isEmpty) 
                               ? _getUserStreamByUidOrName(uid, fallbackName) 
@@ -640,9 +715,9 @@ void showCommentsBottomSheet(BuildContext context, String postId, String postOwn
                               leading: GestureDetector(
                                 onTap: () {
                                   if (resolvedUid.isNotEmpty) {
-                                    Navigator.pop(modalContext); // ボトムシートを閉じる
+                                    Navigator.pop(modalContext); 
                                     Navigator.push(
-                                      parentContext, // 親コンテキストで画面遷移
+                                      parentContext, 
                                       MaterialPageRoute(
                                         builder: (context) => UserProfileScreen(
                                           targetUid: resolvedUid,
@@ -736,7 +811,6 @@ void showCommentsBottomSheet(BuildContext context, String postId, String postOwn
                         }
                       }
 
-                      // 💡 投稿時にuid, userNameに加えてphotoUrlも直接保存（非正規化）
                       await FirebaseFirestore.instance
                           .collection('posts')
                           .doc(postId)
@@ -763,7 +837,7 @@ void showCommentsBottomSheet(BuildContext context, String postId, String postOwn
 }
 
 // ==================================================
-// 1. TL (タイムライン) 画面 - フレンド専用
+// 1. TL (タイムライン) 画面
 // ==================================================
 class TimelineScreen extends StatefulWidget {
   const TimelineScreen({super.key});
@@ -1034,7 +1108,22 @@ class SyncPostCard extends StatelessWidget {
                     onTap: () => showFullImageDialog(context, imageUrl),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: Image.network(imageUrl, height: 180, width: double.infinity, fit: BoxFit.cover),
+                      child: Image.network(
+                        imageUrl,
+                        height: 180,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          height: 180,
+                          color: Colors.grey[300],
+                          alignment: Alignment.center,
+                          child: const Text(
+                            '画像を読み込めませんでした\n(CORS制限の可能性)',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 if (comment.isNotEmpty) ...[
@@ -1135,7 +1224,7 @@ class SyncPostCard extends StatelessWidget {
 }
 
 // ==================================================
-// ログ用カード (動的カルーセルスライド対応)
+// ログ用カード (カルーセルスライド対応)
 // ==================================================
 class CarouselPostCard extends StatefulWidget {
   final WorkoutLogItem logItem;
@@ -1489,14 +1578,23 @@ class _CarouselPostCardState extends State<CarouselPostCard> {
       clipBehavior: Clip.antiAlias,
       child: GestureDetector(
         onTap: () => showFullImageDialog(context, imageUrl),
-        child: Image.network(imageUrl, fit: BoxFit.cover, width: double.infinity),
+        child: Image.network(
+          imageUrl,
+          fit: BoxFit.cover,
+          width: double.infinity,
+          errorBuilder: (context, error, stackTrace) => Container(
+            color: Colors.grey[300],
+            alignment: Alignment.center,
+            child: const Text('画像読込失敗', style: TextStyle(fontSize: 12, color: Colors.grey)),
+          ),
+        ),
       ),
     );
   }
 }
 
 // ==================================================
-// ユーザー情報を安全に取得するためのヘルパー関数
+// ユーザー情報取得ヘルパー関数
 // ==================================================
 Stream<DocumentSnapshot?> _getUserStream(String uidOrEmail) {
   if (uidOrEmail.isEmpty) return Stream.value(null);
@@ -1705,6 +1803,8 @@ class UserProfileScreen extends StatelessWidget {
           String bio = '';
           String? photoUrl;
           String? headerUrl;
+          int level = 1;
+          int activeDays = 0;
 
           if (snapshot.hasData && snapshot.data != null) {
             final data = snapshot.data!.data() as Map<String, dynamic>?;
@@ -1715,8 +1815,12 @@ class UserProfileScreen extends StatelessWidget {
               bio = data['bio'] ?? '';
               photoUrl = data['photoUrl'];
               headerUrl = data['headerUrl'];
+              level = data['level'] ?? 1;
+              activeDays = data['activeDays'] ?? 0;
             }
           }
+
+          int daysToNext = 3 - (activeDays % 3);
 
           return SafeArea(
             child: SingleChildScrollView(
@@ -1811,10 +1915,10 @@ class UserProfileScreen extends StatelessWidget {
                           shape: BoxShape.circle,
                         ),
                         alignment: Alignment.center,
-                        child: const Text('レベル', style: TextStyle(fontSize: 13)),
+                        child: Text('Lv.$level', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                       ),
                       const SizedBox(width: 16),
-                      const Text('次のレベルまで：○日', style: TextStyle(fontSize: 14)),
+                      Text('次のレベルまで：あと $daysToNext 日', style: const TextStyle(fontSize: 14)),
                     ],
                   ),
                   const SizedBox(height: 20),
@@ -1869,7 +1973,7 @@ class UserProfileScreen extends StatelessWidget {
 }
 
 // ==================================================
-// 2. ワークアウト 画面
+// 2. ワークアウト 画面 (OSRM連携 ＆ 動的筋トレモード対応)
 // ==================================================
 class WorkoutScreen extends StatefulWidget {
   const WorkoutScreen({super.key});
@@ -1878,12 +1982,11 @@ class WorkoutScreen extends StatefulWidget {
   State<WorkoutScreen> createState() => _WorkoutScreenState();
 }
 
-enum WorkoutMode { running, muscle }
-
 class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserver {
   bool _isWorkoutStarted = false;
   WorkoutMode _currentMode = WorkoutMode.running;
   bool _isMapReady = false; 
+  bool _isLoadingRoute = false;
 
   Timer? _stopwatchTimer;
   DateTime? _startTime;
@@ -1903,10 +2006,18 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
   final List<LatLng> _routePoints = []; 
   double _totalDistanceMeters = 0.0; 
 
+  // トイレデータ
+  List<ToiletLocation> _allToilets = [];
+
+  // OSRMで取得した道路に沿ったおすすめルートのポイント
+  List<LatLng> _recommendedRoutePoints = [];
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _loadAllToilets();
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         setState(() {
@@ -1915,6 +2026,160 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
         _initCurrentLocation();
       }
     });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (WorkoutRouteConfig.hasNewGoal) {
+      WorkoutRouteConfig.hasNewGoal = false;
+      _fetchOsrmRoute(WorkoutRouteConfig.targetKm);
+    }
+    if (WorkoutRouteConfig.hasNewMuscleGoal) {
+      WorkoutRouteConfig.hasNewMuscleGoal = false;
+      setState(() {});
+    }
+  }
+
+  Future<void> _loadAllToilets() async {
+    List<ToiletLocation> loadedToilets = [];
+    final assetFiles = ['assets/chiyoda_toilet.csv', 'assets/chuo_toilet.csv'];
+
+    for (String path in assetFiles) {
+      try {
+        final byteData = await rootBundle.load(path);
+        final bytes = byteData.buffer.asUint8List();
+        String rawCsv;
+
+        if (path.contains('chuo')) {
+          rawCsv = await CharsetConverter.decode("Shift_JIS", bytes);
+        } else {
+          rawCsv = utf8.decode(bytes, allowMalformed: true);
+        }
+
+        final lines = rawCsv.split('\n');
+
+        for (int i = 1; i < lines.length; i++) {
+          final line = lines[i].trim();
+          if (line.isEmpty) continue;
+          final parts = line.split(',');
+          if (parts.length >= 33) {
+            final name = parts[3].trim();
+            final latStr = parts[15].trim();
+            final lngStr = parts[16].trim();
+            final address = parts[8].trim();
+            final wheelchair = parts[30].trim();
+            final ostomy = parts[32].trim();
+
+            final lat = double.tryParse(latStr);
+            final lng = double.tryParse(lngStr);
+
+            if (lat != null && lng != null) {
+              loadedToilets.add(ToiletLocation(
+                name: name.isEmpty ? '公衆トイレ' : name,
+                latLng: LatLng(lat, lng),
+                hasWheelchair: wheelchair,
+                hasOstomy: ostomy,
+                address: address,
+              ));
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('トイレCSV読み込みエラー ($path): $e');
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _allToilets = loadedToilets;
+      });
+    }
+  }
+
+  Future<void> _fetchOsrmRoute(double targetKm) async {
+    setState(() => _isLoadingRoute = true);
+
+    try {
+      final double lat = _currentLocation.latitude;
+      final double lng = _currentLocation.longitude;
+
+      double radiusDeg = (targetKm / (2 * pi * 111.0)) * 0.6;
+      if (radiusDeg < 0.002) radiusDeg = 0.002;
+
+      List<LatLng> waypoints = [
+        LatLng(lat, lng),                                       
+        LatLng(lat + radiusDeg, lng),                           
+        LatLng(lat, lng + (radiusDeg / cos(lat * pi / 180.0))), 
+        LatLng(lat - radiusDeg, lng),                           
+        LatLng(lat, lng),                                       
+      ];
+
+      String coordinatesString = waypoints.map((p) => '${p.longitude},${p.latitude}').join(';');
+      final url = Uri.parse(
+        'https://router.project-osrm.org/route/v1/foot/$coordinatesString?overview=full&geometries=geojson',
+      );
+
+      final response = await http.get(url).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final routes = data['routes'] as List<dynamic>?;
+
+        if (routes != null && routes.isNotEmpty) {
+          final geometry = routes[0]['geometry'];
+          final coordinates = geometry['coordinates'] as List<dynamic>;
+
+          List<LatLng> fetchedPoints = coordinates.map((coord) {
+            final double lon = (coord[0] as num).toDouble();
+            final double latitude = (coord[1] as num).toDouble();
+            return LatLng(latitude, lon);
+          }).toList();
+
+          if (mounted) {
+            setState(() {
+              _recommendedRoutePoints = fetchedPoints;
+              _isLoadingRoute = false;
+            });
+            try {
+              _mapController.move(_currentLocation, 14.0);
+            } catch (_) {}
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('OSRM API取得エラー: $e');
+    }
+
+    if (mounted) {
+      _generateFallbackLoopRoute(targetKm);
+      setState(() => _isLoadingRoute = false);
+    }
+  }
+
+  void _generateFallbackLoopRoute(double targetKm) {
+    final double lat = _currentLocation.latitude;
+    final double lng = _currentLocation.longitude;
+    double radius = (targetKm / (2 * pi * 111.0)) * 0.5;
+    if (radius < 0.001) radius = 0.001;
+
+    List<LatLng> loopPoints = [];
+    int pointsCount = 12;
+    for (int i = 0; i <= pointsCount; i++) {
+      double angle = (i / pointsCount) * 2 * pi;
+      double dLat = radius * cos(angle);
+      double dLng = (radius / cos(lat * pi / 180.0)) * sin(angle);
+      loopPoints.add(LatLng(lat + dLat, lng + dLng));
+    }
+
+    setState(() {
+      _recommendedRoutePoints = loopPoints;
+    });
+
+    try {
+      _mapController.move(_currentLocation, 14.5);
+    } catch (_) {}
   }
 
   @override
@@ -1956,7 +2221,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
           _currentLocation = newPos;
         });
         try {
-          _mapController.move(newPos, 16.0);
+          _mapController.move(newPos, 15.0);
         } catch (_) {}
       }
     } catch (e) {
@@ -2186,8 +2451,10 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
   }
 
   Future<void> _finishWorkout() async {
-    final service = FlutterBackgroundService();
-    service.invoke('stopService');
+    if (!kIsWeb) {
+      final service = FlutterBackgroundService();
+      service.invoke('stopService');
+    }
 
     _stopLocationTracking();
     _stopwatchTimer?.cancel();
@@ -2307,7 +2574,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppThemeColors.primary,
-                          foregroundColor: Colors.white,
+                          foregroundColor: Colors.black,
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         onPressed: () => Navigator.pop(context),
@@ -2326,7 +2593,44 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
 
     String commentText = commentController.text.trim();
     String distanceKm = (_totalDistanceMeters / 1000.0).toStringAsFixed(2);
+    
     final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      final myUid = user.uid;
+      final todayStr = DateTime.now().toIso8601String().substring(0, 10);
+      
+      final userDocRef = FirebaseFirestore.instance.collection('users').doc(myUid);
+      final userDoc = await userDocRef.get();
+      
+      if (userDoc.exists) {
+        final userData = userDoc.data()!;
+        int activeDays = userData['activeDays'] ?? 0;
+        int currentLevel = userData['level'] ?? 1;
+        String lastWorkoutDate = userData['lastWorkoutDate'] ?? '';
+
+        if (lastWorkoutDate != todayStr) {
+          activeDays += 1;
+          lastWorkoutDate = todayStr;
+          int newLevel = 1 + (activeDays ~/ 3);
+          
+          await userDocRef.update({
+            'activeDays': activeDays,
+            'level': newLevel,
+            'lastWorkoutDate': lastWorkoutDate,
+          });
+
+          if (newLevel > currentLevel && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('🎉 レベルアップ！ Lv.$newLevel になりました！'),
+                backgroundColor: AppThemeColors.success,
+              ),
+            );
+          }
+        }
+      }
+    }
+
     String authorName = 'ゲストランナー';
     String authorAppId = 'ID';
     String authorUid = user != null ? user.uid : 'guest';
@@ -2443,7 +2747,7 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
                           mapController: _mapController,
                           options: MapOptions(
                             initialCenter: _currentLocation,
-                            initialZoom: 16.0,
+                            initialZoom: 15.0,
                           ),
                           children: [
                             TileLayer(
@@ -2452,6 +2756,18 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
                               userAgentPackageName:
                                   'com.tatsuishi.workoutapp',
                             ),
+                            // OSRMで取得した道路に沿ったおすすめルート（緑色）
+                            if (_recommendedRoutePoints.length >= 2)
+                              PolylineLayer(
+                                polylines: [
+                                  Polyline(
+                                    points: _recommendedRoutePoints,
+                                    strokeWidth: 4.0,
+                                    color: AppThemeColors.secondary,
+                                  ),
+                                ],
+                              ),
+                            // 実際に走った軌跡（青色：緑のルート上に上乗せされる）
                             if (_routePoints.length >= 2)
                               PolylineLayer(
                                 polylines: [
@@ -2462,6 +2778,54 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
                                   ),
                                 ],
                               ),
+                            // 全トイレデータ（ピン）
+                            MarkerLayer(
+                              markers: _allToilets.map((toilet) {
+                                return Marker(
+                                  point: toilet.latLng,
+                                  width: 32,
+                                  height: 32,
+                                  child: GestureDetector(
+                                    onTap: () {
+                                      showDialog(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title: Text(toilet.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                          content: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              const Text('📍 公衆トイレ情報', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                                              const SizedBox(height: 8),
+                                              Text('所在地: ${toilet.address.isEmpty ? "詳細情報なし" : toilet.address}'),
+                                              const SizedBox(height: 4),
+                                              Text('♿ 車椅子対応: ${toilet.hasWheelchair.isEmpty ? "情報なし" : toilet.hasWheelchair}'),
+                                              Text('🩺 オストメイト: ${toilet.hasOstomy.isEmpty ? "情報なし" : toilet.hasOstomy}'),
+                                            ],
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () => Navigator.pop(context),
+                                              child: const Text('閉じる'),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    },
+                                    child: Container(
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        shape: BoxShape.circle,
+                                        border: Border.all(color: AppThemeColors.secondary, width: 2),
+                                        boxShadow: const [BoxShadow(blurRadius: 3, color: Colors.black26)],
+                                      ),
+                                      child: const Icon(Icons.wc, color: AppThemeColors.secondary, size: 16),
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+                            // 現在地マーカー
                             MarkerLayer(
                               markers: [
                                 Marker(
@@ -2519,20 +2883,38 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
                         ),
                         const SizedBox(height: 12),
                         Expanded(
-                          child: ListView(
-                            children: const [
-                              _MuscleExerciseTile(
-                                title: 'ベンチプレス',
-                                subtitle: '3セット × 10回 (目標: 60kg)',
-                              ),
-                              _MuscleExerciseTile(
-                                title: 'スクワット',
-                                subtitle: '3セット × 12回 (目標: 80kg)',
-                              ),
-                            ],
+                          child: ListView.builder(
+                            itemCount: WorkoutRouteConfig.muscleWorkouts.length,
+                            itemBuilder: (context, index) {
+                              final item = WorkoutRouteConfig.muscleWorkouts[index];
+                              return _MuscleExerciseTile(
+                                title: item['title'] ?? '',
+                                subtitle: item['subtitle'] ?? '',
+                              );
+                            },
                           ),
                         ),
                       ],
+                    ),
+                  ),
+
+                if (_isLoadingRoute)
+                  Container(
+                    color: Colors.black26,
+                    child: const Center(
+                      child: Card(
+                        child: Padding(
+                          padding: EdgeInsets.all(16.0),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(height: 12),
+                              Text('OSRMで道路に沿ったルートを計算中...', style: TextStyle(fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                   ),
 
@@ -2599,14 +2981,20 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
                         },
                       ),
                       _buildActionButton('スタート', AppThemeColors.secondary, () async {
+                        // ワークアウトスタート時にチャット履歴を両方クリアする
+                        WorkoutRouteConfig.runningChatMessages.clear();
+                        WorkoutRouteConfig.muscleChatMessages.clear();
+
                         setState(() {
                           _isWorkoutStarted = true;
                         });
                         
-                        final service = FlutterBackgroundService();
-                        bool isRunning = await service.isRunning();
-                        if (!isRunning) {
-                          service.startService();
+                        if (!kIsWeb) {
+                          final service = FlutterBackgroundService();
+                          bool isRunning = await service.isRunning();
+                          if (!isRunning) {
+                            service.startService();
+                          }
                         }
 
                         _startStopwatch();
@@ -2615,13 +3003,21 @@ class _WorkoutScreenState extends State<WorkoutScreen> with WidgetsBindingObserv
                       _buildActionButton(
                         '目標設定・\nAI',
                         AppThemeColors.border,
-                        () {
-                          Navigator.push(
+                        () async {
+                          WorkoutRouteConfig.activeMode = _currentMode;
+                          await Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (context) => const GoalSettingScreen(),
                             ),
                           );
+                          if (mounted) {
+                            if (_currentMode == WorkoutMode.running) {
+                              _fetchOsrmRoute(WorkoutRouteConfig.targetKm);
+                            } else {
+                              setState(() {});
+                            }
+                          }
                         },
                       ),
                     ],
@@ -3286,6 +3682,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String? _uid;
   String? _userPhotoUrl;
   String? _userHeaderUrl;
+  int _level = 1;
+  int _activeDays = 0;
 
   @override
   void initState() {
@@ -3308,6 +3706,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
             _bioController.text = data['bio'] ?? '';
             _userPhotoUrl = data['photoUrl'];
             _userHeaderUrl = data['headerUrl'];
+            _level = data['level'] ?? 1;
+            _activeDays = data['activeDays'] ?? 0;
           });
         }
       }
@@ -3524,6 +3924,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    int daysToNext = 3 - (_activeDays % 3);
+
     return SafeArea(
       child: Column(
         children: [
@@ -3618,9 +4020,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   const SizedBox(height: 20),
                   Row(
                     children: [
-                      Container(width: 60, height: 60, decoration: const BoxDecoration(color: AppThemeColors.border, shape: BoxShape.circle), alignment: Alignment.center, child: const Text('レベル', style: TextStyle(fontSize: 13))),
+                      Container(
+                        width: 60,
+                        height: 60,
+                        decoration: const BoxDecoration(color: AppThemeColors.border, shape: BoxShape.circle),
+                        alignment: Alignment.center,
+                        child: Text('Lv.$_level', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                      ),
                       const SizedBox(width: 16),
-                      const Text('次のレベルまで：○日', style: TextStyle(fontSize: 14)),
+                      Text('次のレベルまで：あと $daysToNext 日', style: const TextStyle(fontSize: 14)),
                     ],
                   ),
                   const SizedBox(height: 20),
@@ -3661,7 +4069,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           height: 48,
                           child: ElevatedButton(
                             onPressed: _saveProfile,
-                            style: ElevatedButton.styleFrom(backgroundColor: AppThemeColors.primary, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 0),
+                            style: ElevatedButton.styleFrom(backgroundColor: AppThemeColors.primary, foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)), elevation: 0),
                             child: const Text('プロフィールを保存', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                           ),
                         ),
@@ -3741,7 +4149,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: () => Navigator.pop(context),
-                  style: ElevatedButton.styleFrom(backgroundColor: AppThemeColors.primary, foregroundColor: Colors.white),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppThemeColors.primary, foregroundColor: Colors.black),
                   child: const Text('閉じる'),
                 ),
               ),
@@ -3796,11 +4204,11 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
             child: Center(
               child: ElevatedButton.icon(
                 onPressed: _showMyQrCodeModal,
-                icon: const Icon(Icons.qr_code, color: Colors.white),
+                icon: const Icon(Icons.qr_code, color: Colors.black),
                 label: const Text('マイQRコードを表示', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppThemeColors.primary,
-                  foregroundColor: Colors.white,
+                  foregroundColor: Colors.black,
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
                 ),
@@ -3814,7 +4222,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
 }
 
 // ==================================================
-// 4. 目標設定画面
+// 4. 目標設定画面（筋トレ/ランニングのチャットログ分離＆動的ルート提案）
 // ==================================================
 class GoalSettingScreen extends StatefulWidget {
   const GoalSettingScreen({super.key});
@@ -3824,179 +4232,374 @@ class GoalSettingScreen extends StatefulWidget {
 }
 
 class _GoalSettingScreenState extends State<GoalSettingScreen> {
-  bool _isManualMode = false;
   final TextEditingController _inputController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   bool _isLoading = false;
+
+  final Map<String, double> _temperatureData = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _initChat();
+  }
+
+  Future<void> _initChat() async {
+    final bool isMuscle = WorkoutRouteConfig.activeMode == WorkoutMode.muscle;
+    final chatList = isMuscle ? WorkoutRouteConfig.muscleChatMessages : WorkoutRouteConfig.runningChatMessages;
+
+    if (chatList.isNotEmpty) {
+      return;
+    }
+
+    String initialGreeting = '';
+
+    if (isMuscle) {
+      initialGreeting = 'こんにちは！本日の筋トレメニューや鍛えたい部位について何でもご相談ください。\n（例:「今日は胸と脚をがっつり鍛えたい」「おすすめのメニューを組んで」など）';
+    } else {
+      double temp = 18.0;
+      try {
+        final byteData = await rootBundle.load('assets/data.csv');
+        final rawCsv = utf8.decode(byteData.buffer.asUint8List(), allowMalformed: true);
+        final lines = rawCsv.split('\n');
+
+        for (int i = 4; i < lines.length; i++) {
+          final line = lines[i].trim();
+          if (line.isEmpty) continue;
+          final parts = line.split(',');
+          if (parts.length >= 2) {
+            _temperatureData[parts[0].trim()] = double.tryParse(parts[1].trim()) ?? 18.0;
+          }
+        }
+
+        final now = DateTime.now();
+        temp = _temperatureData['${now.year - 1}/${now.month}'] ?? 20.0;
+      } catch (_) {}
+
+      initialGreeting = 'こんにちは！本日の東京の平均気温（約 ${temp}℃）を考慮しました。本日は何キロ走りたいですか？ または「おすすめのコースを提案して」と話しかけてください！';
+    }
+
+    setState(() {
+      chatList.add(ChatMessage(text: initialGreeting, isUser: false));
+    });
+  }
 
   @override
   void dispose() {
     _inputController.dispose();
+    _scrollController.dispose();
     super.dispose();
   }
 
-  Future<void> _submitGoal() async {
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  Future<void> _sendMessage() async {
     final text = _inputController.text.trim();
-    if (text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('内容を入力してください')),
-      );
-      return;
+    if (text.isEmpty) return;
+
+    _inputController.clear();
+    final bool isMuscle = WorkoutRouteConfig.activeMode == WorkoutMode.muscle;
+    final chatList = isMuscle ? WorkoutRouteConfig.muscleChatMessages : WorkoutRouteConfig.runningChatMessages;
+
+    setState(() {
+      chatList.add(ChatMessage(text: text, isUser: true));
+      _isLoading = true;
+    });
+    _scrollToBottom();
+
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    String aiReplyText = '';
+    List<Map<String, dynamic>>? aiSuggestions;
+
+    if (isMuscle) {
+      aiReplyText = 'ご要望に合わせて、以下の具体的な筋トレ提案を作成しました！チェックを入れて「決定」を押すか、さらに相談を続けてください。';
+      aiSuggestions = [
+        {'title': 'ベンチプレス', 'subtitle': '3セット × 10回 (60kg)', 'selected': true},
+        {'title': 'インクラインダンベルプレス', 'subtitle': '3セット × 12回 (20kg)', 'selected': true},
+        {'title': 'スクワット', 'subtitle': '3セット × 12回 (80kg)', 'selected': true},
+        {'title': 'プランク', 'subtitle': '3セット × 60秒', 'selected': false},
+      ];
+    } else {
+      double targetKm = 5.0;
+      final regExp = RegExp(r'(\d+(?:\.\d+)?)km');
+      final match = regExp.firstMatch(text);
+      if (match != null) {
+        targetKm = double.tryParse(match.group(1) ?? '5.0') ?? 5.0;
+      }
+
+      aiReplyText = '現在の気温とコンディション、ご要望に合わせて、現在地から ${targetKm}km を走れるおすすめの周回ルート案を作成しました！この内容で決定しますか？';
+      aiSuggestions = [
+        {
+          'title': '${targetKm}km 周回ランニングコース',
+          'subtitle': '現在地起点 / ペース目安: 5分30秒/km',
+          'distance': targetKm,
+        },
+      ];
     }
 
-    setState(() => _isLoading = true);
-
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      
-      await FirebaseFirestore.instance.collection('goals').add({
-        'uid': user != null ? user.uid : 'guest',
-        'email': user != null ? user.email : 'guest',
-        'content': text,
-        'mode': _isManualMode ? 'manual' : 'ai_consult',
-        'createdAt': FieldValue.serverTimestamp(),
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        chatList.add(ChatMessage(
+          text: aiReplyText,
+          isUser: false,
+          suggestions: aiSuggestions,
+        ));
       });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              _isManualMode ? '✅ 目標を設定してデータベースに保存しました！' : '🤖 AIにメッセージを送信し、保存しました！',
-            ),
-            backgroundColor: AppThemeColors.primary,
-          ),
-        );
-        Navigator.pop(context);
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('エラーが発生しました: $e'),
-            backgroundColor: AppThemeColors.error,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+      _scrollToBottom();
     }
+  }
+
+  void _applySelectedSuggestions(List<Map<String, dynamic>> suggestions) {
+    final bool isMuscle = WorkoutRouteConfig.activeMode == WorkoutMode.muscle;
+
+    if (isMuscle) {
+      final selectedItems = suggestions.where((s) => s['selected'] == true).toList();
+      if (selectedItems.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('少なくとも1つの項目を選択してください')),
+        );
+        return;
+      }
+
+      List<Map<String, String>> newWorkouts = selectedItems.map((item) {
+        return {
+          'title': item['title'].toString(),
+          'subtitle': item['subtitle'].toString(),
+        };
+      }).toList();
+
+      WorkoutRouteConfig.muscleWorkouts = newWorkouts;
+      WorkoutRouteConfig.hasNewMuscleGoal = true;
+    } else {
+      double targetKm = 5.0;
+      if (suggestions.isNotEmpty && suggestions[0].containsKey('distance')) {
+        targetKm = (suggestions[0]['distance'] as num).toDouble();
+      }
+      WorkoutRouteConfig.targetKm = targetKm;
+      WorkoutRouteConfig.hasNewGoal = true;
+    }
+
+    Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
+    final bool isMuscle = WorkoutRouteConfig.activeMode == WorkoutMode.muscle;
+    final chatList = isMuscle ? WorkoutRouteConfig.muscleChatMessages : WorkoutRouteConfig.runningChatMessages;
+
     return Scaffold(
       backgroundColor: AppThemeColors.background,
-      body: SafeArea(
-        child: Column(
-          children: [
-            Container(
-              width: double.infinity,
-              height: 60,
-              color: AppThemeColors.border,
-              child: Stack(
+      appBar: AppBar(
+        backgroundColor: AppThemeColors.surface,
+        elevation: 1,
+        iconTheme: const IconThemeData(color: AppThemeColors.text),
+        title: Text(
+          isMuscle ? '筋トレAIチャット相談' : 'ランニングAIチャット相談',
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: AppThemeColors.text),
+        ),
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.all(16),
+              itemCount: chatList.length,
+              itemBuilder: (context, index) {
+                final message = chatList[index];
+                return _buildMessageBubble(message, isMuscle);
+              },
+            ),
+          ),
+          if (_isLoading)
+            const Padding(
+              padding: EdgeInsets.all(8.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: IconButton(
-                      icon: const Icon(Icons.arrow_back, color: AppThemeColors.text),
-                      onPressed: () => Navigator.pop(context),
-                    ),
-                  ),
-                  const Center(
-                    child: Text('目標設定・AI相談', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  ),
+                  SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                  SizedBox(width: 8),
+                  Text('AIが考えています...', style: TextStyle(color: Colors.grey, fontSize: 12)),
                 ],
               ),
             ),
-            Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (!_isManualMode) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            color: AppThemeColors.surface,
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _inputController,
+                    decoration: InputDecoration(
+                      hintText: isMuscle ? '筋トレの相談 (例: 胸をきたえたい)' : 'ランニングの相談 (例: 3km走りたい)',
+                      hintStyle: const TextStyle(color: Colors.grey, fontSize: 13),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: const BorderSide(color: AppThemeColors.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: const BorderSide(color: AppThemeColors.border),
+                      ),
+                    ),
+                    onSubmitted: (_) => _sendMessage(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  icon: const Icon(Icons.send, color: AppThemeColors.primary),
+                  onPressed: _sendMessage,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMessageBubble(ChatMessage message, bool isMuscle) {
+    final bool isUser = message.isUser;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Column(
+        crossAxisAlignment: isUser ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!isUser) ...[
+                const CircleAvatar(
+                  backgroundColor: AppThemeColors.primary,
+                  radius: 16,
+                  child: Icon(Icons.smart_toy, size: 18, color: Colors.black),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isUser ? AppThemeColors.primary : AppThemeColors.surface,
+                    borderRadius: BorderRadius.circular(16),
+                    border: isUser ? null : Border.all(color: AppThemeColors.border),
+                  ),
+                  child: Text(
+                    message.text,
+                    style: TextStyle(
+                      color: isUser ? Colors.white : AppThemeColors.text,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ),
+              if (isUser) const SizedBox(width: 8),
+            ],
+          ),
+          if (!isUser && message.suggestions != null && message.suggestions!.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(left: 40, top: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppThemeColors.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppThemeColors.primary, width: 1.5),
+              ),
+              child: StatefulBuilder(
+                builder: (context, setSuggestionState) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        isMuscle ? '💡 AIの具体的提案 (チェックリスト)' : '💡 AIのおすすめルート提案',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppThemeColors.primary),
+                      ),
+                      const Divider(),
+                      if (isMuscle)
+                        ...message.suggestions!.map((suggestion) {
+                          return CheckboxListTile(
+                            title: Text(suggestion['title'], style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                            subtitle: Text(suggestion['subtitle'], style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                            value: suggestion['selected'] ?? false,
+                            dense: true,
+                            activeColor: AppThemeColors.primary,
+                            contentPadding: EdgeInsets.zero,
+                            onChanged: (bool? value) {
+                              setSuggestionState(() {
+                                suggestion['selected'] = value ?? false;
+                              });
+                            },
+                          );
+                        })
+                      else
+                        ...message.suggestions!.map((suggestion) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 4),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(suggestion['title'], style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                                Text(suggestion['subtitle'], style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                              ],
+                            ),
+                          );
+                        }),
+                      const SizedBox(height: 8),
                       Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            width: 48, height: 48,
-                            decoration: const BoxDecoration(color: AppThemeColors.border, shape: BoxShape.circle),
-                            child: const Icon(Icons.smart_toy_outlined, color: Colors.grey),
-                          ),
-                          const SizedBox(width: 16),
                           Expanded(
-                            child: Container(
-                              height: 120,
-                              decoration: BoxDecoration(color: AppThemeColors.border, borderRadius: BorderRadius.circular(8)),
-                              alignment: Alignment.center,
-                              padding: const EdgeInsets.all(12),
-                              child: const Text(
-                                'AIからのコメント\n\n(例: 今日はどのようなトレーニングをしたい気分ですか？)',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(fontSize: 14, color: AppThemeColors.text),
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppThemeColors.primary,
+                                foregroundColor: Colors.black,
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                               ),
+                              onPressed: () => _applySelectedSuggestions(message.suggestions!),
+                              child: const Text('決定して反映する', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppThemeColors.text,
+                                side: const BorderSide(color: AppThemeColors.border),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              onPressed: () {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('続けてチャットでご相談ください！')),
+                                );
+                              },
+                              child: const Text('まだ相談する', style: TextStyle(fontSize: 12)),
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 24),
                     ],
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton.icon(
-                        onPressed: () {
-                          setState(() {
-                            _isManualMode = !_isManualMode;
-                            _inputController.clear();
-                          });
-                        },
-                        icon: Icon(_isManualMode ? Icons.smart_toy : Icons.edit, size: 18),
-                        label: Text(_isManualMode ? 'AIに相談するモードへ' : '自分で設定する'),
-                        style: TextButton.styleFrom(
-                          backgroundColor: AppThemeColors.border,
-                          foregroundColor: AppThemeColors.text,
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Container(
-                      decoration: BoxDecoration(color: AppThemeColors.border, borderRadius: BorderRadius.circular(8)),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      child: TextField(
-                        controller: _inputController,
-                        maxLines: 5,
-                        decoration: InputDecoration(
-                          border: InputBorder.none,
-                          hintText: _isManualMode ? 'テキストボックス\n\n(例: 今日は5km走る！)' : 'テキストボックス\n\n(例: 今日は疲れているから軽めの運動にしたい)',
-                          hintStyle: const TextStyle(color: Colors.grey),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 32),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 52,
-                      child: ElevatedButton(
-                        onPressed: _isLoading ? null : _submitGoal,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppThemeColors.primary,
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
-                        child: _isLoading
-                            ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                            : Text(_isManualMode ? 'この目標で決定する' : 'AIに送信', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                      ),
-                    ),
-                  ],
-                ),
+                  );
+                },
               ),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }
